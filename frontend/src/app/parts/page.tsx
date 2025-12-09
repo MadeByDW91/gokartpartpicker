@@ -1,17 +1,19 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { partsAPI, buildsAPI } from '@/lib/api';
-import { getCurrentBuildId, setCurrentBuildId } from '@/utils/buildClient';
+import { partsAPI } from '@/lib/api';
+import { useBuild } from '@/context/BuildContext';
 import Header from '@/components/Header';
+import { MOCK_PARTS, type Part as MockPart } from '@/mock/parts';
 import type { PartResponse } from '@gokartpartpicker/shared';
 
-// Static category list (should match backend)
+// Static category list (should match backend and mock data)
 const CATEGORIES = [
   'engine',
   'clutch',
+  'torque_converter',
   'sprocket',
   'chain',
   'tire',
@@ -20,6 +22,7 @@ const CATEGORIES = [
   'frame',
   'seat',
   'steering',
+  'accessory',
   'other',
 ];
 
@@ -55,8 +58,41 @@ export default function PartsPage() {
   // Debounce timer
   const [debounceTimer, setDebounceTimer] = useState<NodeJS.Timeout | null>(null);
   
-  // Build selection
-  const [addingToBuild, setAddingToBuild] = useState<string | null>(null);
+  // Build context
+  const { addItem } = useBuild();
+  
+  // Feedback message
+  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
+  
+  // Use mock data flag
+  const [useMockData, setUseMockData] = useState(false);
+  
+  // Convert mock parts to PartResponse format
+  const mockPartsAsResponse = useMemo((): PartResponse[] => {
+    return MOCK_PARTS.map((part: MockPart): PartResponse => ({
+      id: part.id,
+      name: part.name,
+      brand: part.brand,
+      category: part.category.toLowerCase(),
+      price: part.price,
+      sku: part.sku,
+      imageUrls: part.imageUrl ? [part.imageUrl] : [],
+      compatibilityProfiles: part.compatibility
+        ? [
+            {
+              id: `${part.id}-comp`,
+              partId: part.id,
+              engineModel: part.compatibility.engineModels?.[0] || null,
+              shaftDiameter: part.compatibility.shaftSize || null,
+              boltPattern: null,
+              chainSize: part.compatibility.chainSize || null,
+              frameType: null,
+              notes: null,
+            },
+          ]
+        : [],
+    }));
+  }, []);
 
   // Update URL with current filters
   const updateURL = useCallback((filters: Record<string, string | number>) => {
@@ -69,6 +105,67 @@ export default function PartsPage() {
     router.push(`/parts?${params.toString()}`, { scroll: false });
   }, [router]);
 
+  // Filter mock parts based on current filters
+  const filterMockParts = useCallback((parts: PartResponse[]): PartResponse[] => {
+    let filtered = [...parts];
+    
+    // Search query
+    if (q) {
+      const query = q.toLowerCase();
+      filtered = filtered.filter(
+        (p) =>
+          p.name.toLowerCase().includes(query) ||
+          p.brand.toLowerCase().includes(query) ||
+          p.sku.toLowerCase().includes(query)
+      );
+    }
+    
+    // Category
+    if (category) {
+      filtered = filtered.filter((p) => p.category.toLowerCase() === category.toLowerCase());
+    }
+    
+    // Brand
+    if (brand) {
+      filtered = filtered.filter((p) =>
+        p.brand.toLowerCase().includes(brand.toLowerCase())
+      );
+    }
+    
+    // Engine model
+    if (engineModel) {
+      filtered = filtered.filter((p) =>
+        p.compatibilityProfiles.some(
+          (cp) => cp.engineModel?.toLowerCase().includes(engineModel.toLowerCase())
+        )
+      );
+    }
+    
+    // Chain size
+    if (chainSize) {
+      filtered = filtered.filter((p) =>
+        p.compatibilityProfiles.some((cp) => cp.chainSize === chainSize)
+      );
+    }
+    
+    // Price range
+    if (priceMin) {
+      const min = parseFloat(priceMin);
+      if (!isNaN(min)) {
+        filtered = filtered.filter((p) => p.price >= min);
+      }
+    }
+    
+    if (priceMax) {
+      const max = parseFloat(priceMax);
+      if (!isNaN(max)) {
+        filtered = filtered.filter((p) => p.price <= max);
+      }
+    }
+    
+    return filtered;
+  }, [q, category, brand, engineModel, chainSize, priceMin, priceMax]);
+  
   // Load parts with current filters
   const loadParts = useCallback(async () => {
     try {
@@ -88,20 +185,59 @@ export default function PartsPage() {
       if (priceMin) params.price_min = parseFloat(priceMin);
       if (priceMax) params.price_max = parseFloat(priceMax);
       
-      const response = await partsAPI.getAll(params);
-      setData(response);
-      
-      // Update URL
-      updateURL({
-        ...params,
-        page: response.page,
-      });
+      try {
+        const response = await partsAPI.getAll(params);
+        setData(response);
+        setUseMockData(false);
+        
+        // Update URL
+        updateURL({
+          ...params,
+          page: response.page,
+        });
+      } catch (apiError) {
+        // Fallback to mock data if API fails
+        console.warn('API request failed, using mock data:', apiError);
+        const filtered = filterMockParts(mockPartsAsResponse);
+        
+        // Apply pagination
+        const startIndex = (page - 1) * pageSize;
+        const endIndex = startIndex + pageSize;
+        const paginated = filtered.slice(startIndex, endIndex);
+        
+        setData({
+          items: paginated,
+          total: filtered.length,
+          page,
+          page_size: pageSize,
+        });
+        setUseMockData(true);
+        
+        // Update URL
+        updateURL({
+          ...params,
+          page,
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load parts');
+      // Try mock data as last resort
+      const filtered = filterMockParts(mockPartsAsResponse);
+      const startIndex = (page - 1) * pageSize;
+      const endIndex = startIndex + pageSize;
+      const paginated = filtered.slice(startIndex, endIndex);
+      
+      setData({
+        items: paginated,
+        total: filtered.length,
+        page,
+        page_size: pageSize,
+      });
+      setUseMockData(true);
     } finally {
       setLoading(false);
     }
-  }, [q, category, brand, engineModel, chainSize, priceMin, priceMax, page, pageSize, updateURL]);
+  }, [q, category, brand, engineModel, chainSize, priceMin, priceMax, page, pageSize, updateURL, filterMockParts, mockPartsAsResponse]);
 
   // Initial load from URL params
   useEffect(() => {
@@ -141,61 +277,29 @@ export default function PartsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
-  const handleAddToBuild = async (partId: string) => {
-    try {
-      // Get current build ID or create a new one
-      let buildId = getCurrentBuildId();
-      
-      if (!buildId) {
-        // Create a new build automatically
-        const build = await buildsAPI.create({ userName: 'guest' });
-        buildId = build.id;
-        setCurrentBuildId(buildId);
-      }
-      
-      await addPartToBuild(buildId, partId);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create build or add part');
-    }
-  };
-
-  const addPartToBuild = async (buildId: string, partId: string) => {
-    try {
-      setAddingToBuild(partId);
-      
-      // Determine slot category based on part category
-      const part = data?.items.find(p => p.id === partId);
-      const defaultSlotCategory = part?.category?.toUpperCase() || 'OTHER';
-      
-      // Use a simple default slot category (can be enhanced later)
-      const slotCategoryMap: Record<string, string> = {
-        'engine': 'ENGINE',
-        'clutch': 'DRIVE',
-        'sprocket': 'DRIVE',
-        'chain': 'DRIVE',
-        'tire': 'WHEEL',
-        'wheel': 'WHEEL',
-        'brake': 'BRAKE',
-        'frame': 'FRAME',
-        'seat': 'SEAT',
-        'steering': 'STEERING',
-      };
-      
-      const slotCategory = slotCategoryMap[part?.category?.toLowerCase() || ''] || 'OTHER';
-      
-      await buildsAPI.addPart(buildId, {
-        partId,
-        slotCategory,
-        quantity: 1,
-      });
-      
-      alert('Part added to build!');
-      router.push(`/build/${buildId}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add part to build');
-    } finally {
-      setAddingToBuild(null);
-    }
+  const handleAddToBuild = (part: PartResponse) => {
+    // Map part to build item shape
+    const buildItem = {
+      id: part.id,
+      name: part.name,
+      brand: part.brand,
+      category: part.category,
+      price: part.price,
+    };
+    
+    // Add to build context
+    addItem(buildItem);
+    
+    // Show feedback message
+    setFeedbackMessage(`Added "${part.name}" to build`);
+    
+    // Clear feedback after 3 seconds
+    setTimeout(() => {
+      setFeedbackMessage(null);
+    }, 3000);
+    
+    // Log for debugging
+    console.log('Added to build:', buildItem);
   };
 
   const clearFilters = () => {
@@ -214,19 +318,19 @@ export default function PartsPage() {
   const canGoNext = page < totalPages;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen">
       <Header />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex gap-8">
           {/* Filters Sidebar */}
           <aside className="w-80 flex-shrink-0">
-            <div className="bg-white rounded-lg shadow-md p-6 sticky top-4">
+            <div className="rounded-lg bg-gpp-bg-soft border border-gpp-border p-6 sticky top-4">
               <div className="flex justify-between items-center mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">Filters</h2>
+                <h2 className="text-lg font-semibold text-gpp-cream">Filters</h2>
                 <button
                   onClick={clearFilters}
-                  className="text-sm text-primary-600 hover:text-primary-700"
+                  className="text-sm text-gpp-orange hover:text-gpp-orange-dark"
                 >
                   Clear All
                 </button>
@@ -235,7 +339,7 @@ export default function PartsPage() {
               <div className="space-y-4">
                 {/* Search */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Search
                   </label>
                   <input
@@ -243,19 +347,19 @@ export default function PartsPage() {
                     value={q}
                     onChange={(e) => setQ(e.target.value)}
                     placeholder="Search name, brand, SKU..."
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream placeholder-gpp-text-muted focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                   />
                 </div>
 
                 {/* Category */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Category
                   </label>
                   <select
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                   >
                     <option value="">All Categories</option>
                     {CATEGORIES.map(cat => (
@@ -268,7 +372,7 @@ export default function PartsPage() {
 
                 {/* Brand */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Brand
                   </label>
                   <input
@@ -276,13 +380,13 @@ export default function PartsPage() {
                     value={brand}
                     onChange={(e) => setBrand(e.target.value)}
                     placeholder="Filter by brand..."
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream placeholder-gpp-text-muted focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                   />
                 </div>
 
                 {/* Engine Model */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Engine Model
                   </label>
                   <input
@@ -290,19 +394,19 @@ export default function PartsPage() {
                     value={engineModel}
                     onChange={(e) => setEngineModel(e.target.value)}
                     placeholder="Filter by engine model..."
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream placeholder-gpp-text-muted focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                   />
                 </div>
 
                 {/* Chain Size */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Chain Size
                   </label>
                   <select
                     value={chainSize}
                     onChange={(e) => setChainSize(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    className="w-full px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                   >
                     {CHAIN_SIZES.map(size => (
                       <option key={size} value={size}>
@@ -314,7 +418,7 @@ export default function PartsPage() {
 
                 {/* Price Range */}
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gpp-cream mb-2">
                     Price Range
                   </label>
                   <div className="flex gap-2">
@@ -325,7 +429,7 @@ export default function PartsPage() {
                       placeholder="Min"
                       min="0"
                       step="0.01"
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      className="flex-1 px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream placeholder-gpp-text-muted focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                     />
                     <input
                       type="number"
@@ -334,7 +438,7 @@ export default function PartsPage() {
                       placeholder="Max"
                       min="0"
                       step="0.01"
-                      className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      className="flex-1 px-3 py-2 bg-gpp-bg border border-gpp-border rounded-lg text-gpp-cream placeholder-gpp-text-muted focus:ring-2 focus:ring-gpp-orange focus:border-gpp-orange"
                     />
                   </div>
                 </div>
@@ -345,27 +449,40 @@ export default function PartsPage() {
           {/* Parts List */}
           <div className="flex-1">
             <div className="flex justify-between items-center mb-6">
-              <h1 className="text-3xl font-bold text-gray-900">Parts Catalog</h1>
+              <div>
+                <h1 className="text-3xl font-bold text-gpp-cream">Parts Catalog</h1>
+                {useMockData && (
+                  <p className="text-sm text-gpp-warning mt-1">
+                    Using mock data (API unavailable)
+                  </p>
+                )}
+              </div>
               {data && (
-                <p className="text-gray-600">
+                <p className="text-gpp-text-muted">
                   Showing {data.items.length} of {data.total} parts
                 </p>
               )}
             </div>
 
             {error && (
-              <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
+              <div className="mb-4 p-4 bg-gpp-error/20 border border-gpp-error rounded-lg text-gpp-cream">
                 {error}
+              </div>
+            )}
+
+            {feedbackMessage && (
+              <div className="mb-4 p-4 bg-gpp-success/20 border border-gpp-success rounded-lg text-gpp-cream">
+                {feedbackMessage}
               </div>
             )}
 
             {loading ? (
               <div className="text-center py-12">
-                <p className="text-gray-600">Loading parts...</p>
+                <p className="text-gpp-text-muted">Loading parts...</p>
               </div>
             ) : !data || data.items.length === 0 ? (
               <div className="text-center py-12">
-                <p className="text-gray-600">No parts found. Try adjusting your filters.</p>
+                <p className="text-gpp-text-muted">No parts found. Try adjusting your filters.</p>
               </div>
             ) : (
               <>
@@ -378,9 +495,9 @@ export default function PartsPage() {
                       .slice(0, 2);
 
                     return (
-                      <div key={part.id} className="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow">
+                      <div key={part.id} className="rounded-lg bg-gpp-bg-soft border border-gpp-border overflow-hidden hover:border-gpp-orange transition-colors">
                         {/* Image */}
-                        <div className="h-48 bg-gray-200 flex items-center justify-center">
+                        <div className="h-48 bg-gpp-bg flex items-center justify-center">
                           {part.imageUrls && part.imageUrls.length > 0 ? (
                             <img
                               src={part.imageUrls[0]}
@@ -388,37 +505,36 @@ export default function PartsPage() {
                               className="w-full h-full object-cover"
                             />
                           ) : (
-                            <div className="text-gray-400 text-sm">No Image</div>
+                            <div className="text-gpp-text-muted text-sm">No Image</div>
                           )}
                         </div>
 
                         {/* Content */}
                         <div className="p-4">
-                          <h3 className="text-lg font-semibold text-gray-900 mb-2">{part.name}</h3>
-                          <p className="text-sm text-gray-600 mb-1">
+                          <h3 className="text-lg font-semibold text-gpp-cream mb-2">{part.name}</h3>
+                          <p className="text-sm text-gpp-text-muted mb-1">
                             <span className="font-medium">Brand:</span> {part.brand}
                           </p>
-                          <p className="text-sm text-gray-600 mb-1">
+                          <p className="text-sm text-gpp-text-muted mb-1">
                             <span className="font-medium">Category:</span> {part.category}
                           </p>
                           
                           {/* Compatibility snippet */}
                           {engineModels.length > 0 && (
-                            <p className="text-xs text-gray-500 mb-2">
+                            <p className="text-xs text-gpp-text-muted mb-2">
                               Engine: {engineModels.join(', ')}
                             </p>
                           )}
                           
-                          <p className="text-lg font-bold text-primary-600 mb-4">
+                          <p className="text-lg font-bold text-gpp-orange mb-4">
                             ${part.price.toFixed(2)}
                           </p>
                           
                           <button
-                            onClick={() => handleAddToBuild(part.id)}
-                            disabled={addingToBuild === part.id}
-                            className="w-full px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            onClick={() => handleAddToBuild(part)}
+                            className="w-full inline-flex items-center justify-center rounded-md bg-gpp-orange px-4 py-2 text-sm font-semibold text-gpp-cream hover:bg-gpp-orange-dark transition-colors"
                           >
-                            {addingToBuild === part.id ? 'Adding...' : 'Add to Build'}
+                            Add to Build
                           </button>
                         </div>
                       </div>
@@ -432,19 +548,19 @@ export default function PartsPage() {
                     <button
                       onClick={() => setPage(page - 1)}
                       disabled={!canGoPrevious}
-                      className="px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-4 py-2 bg-gpp-bg-soft border border-gpp-border rounded-lg text-gpp-cream hover:bg-gpp-border disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       Previous
                     </button>
                     
-                    <span className="text-gray-600">
+                    <span className="text-gpp-text-muted">
                       Page {page} of {totalPages}
                     </span>
                     
                     <button
                       onClick={() => setPage(page + 1)}
                       disabled={!canGoNext}
-                      className="px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="px-4 py-2 bg-gpp-bg-soft border border-gpp-border rounded-lg text-gpp-cream hover:bg-gpp-border disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       Next
                     </button>

@@ -8,6 +8,19 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        gpp: {
+          bg: 'var(--gpp-bg)',
+          'bg-soft': 'var(--gpp-bg-soft)',
+          cream: 'var(--gpp-cream)',
+          orange: 'var(--gpp-orange)',
+          'orange-dark': 'var(--gpp-orange-dark)',
+          text: 'var(--gpp-text-main)',
+          'text-muted': 'var(--gpp-text-muted)',
+          border: 'var(--gpp-border-subtle)',
+          success: 'var(--gpp-success)',
+          warning: 'var(--gpp-warning)',
+          error: 'var(--gpp-error)',
+        },
         primary: {
           50: '#f0f9ff',
           100: '#e0f2fe',
@@ -25,4 +38,3 @@ module.exports = {
   },
   plugins: [],
 }
-
