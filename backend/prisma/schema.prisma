@@ -1,0 +1,68 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Part {
+  id                   String                 @id @default(cuid())
+  name                 String
+  sku                  String
+  brand                String
+  category             String
+  description          String?
+  price                Decimal
+  imageUrls            String[]
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  compatibilityProfiles CompatibilityProfile[]
+  buildItems           BuildItem[]
+
+  @@unique([sku])
+  @@index([category])
+  @@index([brand])
+}
+
+model CompatibilityProfile {
+  id           String   @id @default(cuid())
+  partId       String
+  part         Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  engineModel  String?
+  shaftDiameter String?
+  boltPattern  String?
+  chainSize    String?
+  frameType    String?
+  notes        String?
+
+  @@index([partId])
+}
+
+model Build {
+  id        String      @id @default(cuid())
+  userName  String
+  createdAt DateTime    @default(now())
+  items     BuildItem[]
+
+  @@index([userName])
+}
+
+model BuildItem {
+  id           String   @id @default(cuid())
+  buildId      String
+  build        Build    @relation(fields: [buildId], references: [id], onDelete: Cascade)
+  partId       String
+  part         Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  slotCategory String
+  quantity     Int      @default(1)
+
+  @@index([buildId])
+  @@index([partId])
+  @@index([slotCategory])
+}
+
